@@ -36,7 +36,7 @@ const (
 const EmptyVote = -10
 
 const (
-	HeartbeatInterval = 36 * time.Millisecond
+	HeartbeatInterval = 38 * time.Millisecond
 	ElectionTimeout   = 150 * time.Millisecond
 )
 
@@ -66,7 +66,7 @@ type Entry struct {
 //
 type Raft struct {
 	mu        sync.Mutex
-	logmu     sync.RWMutex
+	logmu     sync.Mutex
 	peers     []*labrpc.ClientEnd
 	persister *Persister
 	me        int // index into peers[]
@@ -95,7 +95,7 @@ type Raft struct {
 	applyCh     chan ApplyMsg
 
 	//wait works goroutine end
-	//wg sync.WaitGroup
+	wg sync.WaitGroup
 	pendingSnap bool
 }
 
@@ -133,8 +133,13 @@ func (rf *Raft) ChangeState(newstate int) {
 		num := len(rf.peers)
 		rf.nextIndex = make([]int, num)
 		rf.matchIndex = make([]int, num)
-		for i, lastidx := 0, rf.LastIndex(); i < num; i++ {
-			rf.matchIndex[i] = 0
+		rf.logmu.Lock()
+		baseidx := rf.BaseIndex()
+		lastidx := rf.LastIndex()
+		rf.logmu.Unlock()
+		for i:= 0; i < num; i++ {
+			//TODO:
+			rf.matchIndex[i] = baseidx
 			rf.nextIndex[i] = lastidx + 1
 		}
 	}
@@ -166,8 +171,8 @@ func (rf *Raft) updateCurrentTerm(newterm int, newleader int) {
 
 	rf.mu.Lock()
 	rf.CurrentTerm = newterm
-	rf.VotedFor = newleader
 	rf.mu.Unlock()
+	rf.VotedFor = newleader
 	rf.persist()
 }
 
@@ -178,9 +183,7 @@ func (rf *Raft) Running() bool {
 }
 
 func (rf *Raft) Vote(peer int) {
-	rf.mu.Lock()
 	rf.VotedFor = peer
-	rf.mu.Unlock()
 	rf.persist()
 }
 
@@ -370,9 +373,9 @@ func (rf *Raft) Init() error {
 	rf.commitIndex, _ = rf.readMeta(snapdata)
 	//apply snapshot to state machine in init state
 	message := ApplyMsg{UseSnapshot: true, Snapshot: snapdata}
-	//rf.wg.Add(1)
+	rf.wg.Add(1)
 	go func() {
-		//defer rf.wg.Done()
+		defer rf.wg.Done()
 		rf.applyCh <- message
 	}()
 	rf.lastApplied = rf.commitIndex
@@ -412,16 +415,16 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.applyCh = applyCh
 
 	//enter event loop
-	//rf.wg.Add(1)
+	rf.wg.Add(1)
 	go func() {
-		//defer rf.wg.Done()
+		defer rf.wg.Done()
 		rf.loop()
 	}()
 
 	//apply event to state machine
-	//rf.wg.Add(1)
+	rf.wg.Add(1)
 	go func() {
-		//defer rf.wg.Done()
+		defer rf.wg.Done()
 		rf.applyLoop()
 	}()
 
@@ -464,7 +467,6 @@ func (rf *Raft) loop() {
 	}
 }
 
-
 func (rf *Raft) applyLoop() {
 	for rf.state != Stopped {
 		select {
@@ -473,16 +475,12 @@ func (rf *Raft) applyLoop() {
 			return
 
 		case <-rf.applyNotice:
-			//need read lock
-			//rf.logmu.RLock()
-			//baseidx := rf.BaseIndex()
 			if rf.lastApplied >= rf.BaseIndex(){
 				for rf.commitIndex > rf.lastApplied {
 					rf.lastApplied++
 					rf.applyCh <- ApplyMsg{rf.lastApplied, rf.Log[rf.lastApplied-rf.BaseIndex()].Command, false, nil}
 				}
 			}
-			//rf.logmu.RUnlock()
 		}
 	}
 }

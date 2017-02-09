@@ -70,15 +70,14 @@ func (rf *Raft) candidateLoop() {
 			timeoutChan = random(ElectionTimeout, 2*ElectionTimeout)
 			// Send RequestVote RPCs to all other servers
 			respChan = make(chan *RequestVoteReply, len(rf.peers)-1)
-			rf.logmu.RLock()
 			lastLogIndex := rf.LastIndex()
 			lastLogTerm := rf.Log[lastLogIndex-rf.BaseIndex()].Term
-			rf.logmu.RUnlock()
+
 			for i := 0; i < len(rf.peers); i++ {
 				if i != rf.me {
-					//rf.wg.Add(1)
+					rf.wg.Add(1)
 					go func(server int) {
-						//defer rf.wg.Done()
+						defer rf.wg.Done()
 						r := new(RequestVoteReply)
 						ok := rf.sendRequestVote(server, RequestVoteArgs{rf.CurrentTerm, rf.me, lastLogIndex, lastLogTerm}, r)
 						if ok {
@@ -134,6 +133,7 @@ func (rf *Raft) candidateLoop() {
 
 func (rf *Raft) leaderLoop() {
 	//first, insert a blank no-op enter,instead first heartbeats Charter 8
+	/*rf.Log = append(rf.Log, Entry{rf.CurrentTerm, nil})*/
 	heartbeats := true
 	//commit Set.
 	commitSync := make(map[int]bool)
@@ -141,17 +141,16 @@ func (rf *Raft) leaderLoop() {
 	
 	respChan := make(chan *AppendEntriesReply, len(rf.peers)*3)
 	//snapshot reply
-	snapChan := make(chan *SnatshotReply, len(rf.peers)-1)
+	snapChan := make(chan *SnatshotReply, len(rf.peers))
 
 	for rf.state == Leader {
 		if heartbeats {
-			rf.logmu.RLock()
+			
 			for i := 0; i < len(rf.peers); i++ {
 				if i != rf.me {
 					rf.boatcastAppend(i, respChan, snapChan)
 				}
 			}
-			rf.logmu.RUnlock()
 			timeoutChan = random(HeartbeatInterval, HeartbeatInterval)
 			heartbeats = false
 		}
@@ -161,9 +160,9 @@ func (rf *Raft) leaderLoop() {
 			rf.ChangeState(Stopped)
 			return
 
-		case snap := <-snapChan:
-			if success := rf.handleSnapshotResponse(snap); success {
-				rf.leaderCommit(commitSync, snap.PeerId)
+		case r := <-snapChan:
+			if success := rf.handleSnapshotResponse(r); success {
+				rf.leaderCommit(commitSync, r.PeerId)
 			}
 
 		case reply := <-respChan:

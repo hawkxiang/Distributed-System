@@ -1,7 +1,5 @@
 package raft
 
-//import "fmt"
-
 //AppendEntries RPC arguments structure.
 type AppendEntriesArgs struct {
 	Term         int
@@ -40,9 +38,6 @@ func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply)
 func (rf *Raft) handleAppendEntries(args *AppendEntriesArgs) (AppendEntriesReply, bool) {
 	
 	if args.Term < rf.CurrentTerm {
-		//change the remote server which the AppendEntries come from to be a follower.
-		//heartbeats false, append false
-		//return AppendEntriesReply{rf.CurrentTerm, false, rf.me, len(rf.Log) - 1}, false
 		return AppendEntriesReply{rf.CurrentTerm, false, EmptyVote, -1}, false
 	}
 
@@ -51,9 +46,7 @@ func (rf *Raft) handleAppendEntries(args *AppendEntriesArgs) (AppendEntriesReply
 	} else {
 		// the local server can not leader, maybe candidate or Follower
 		if rf.state == Candidate {
-			rf.mu.Lock()
 			rf.state = Follower
-			rf.mu.Unlock()
 		}
 		
 		rf.VotedFor = args.LeaderId
@@ -61,25 +54,24 @@ func (rf *Raft) handleAppendEntries(args *AppendEntriesArgs) (AppendEntriesReply
 	}
 	defer rf.persist()
 
+	rf.logmu.Lock()
+	defer rf.logmu.Unlock()
+	
 	if args.PrevLogIndex < rf.commitIndex {
 		return AppendEntriesReply{rf.CurrentTerm, false, rf.me, rf.commitIndex}, true 
 	}
 
-	rf.logmu.Lock()
-	defer rf.logmu.Unlock()
-	lastidx := rf.LastIndex()
-	baseidx := rf.BaseIndex()
-	if args.PrevLogIndex > lastidx {
-		return AppendEntriesReply{rf.CurrentTerm, false, rf.me, lastidx}, true
+	if args.PrevLogIndex > rf.LastIndex() {
+		return AppendEntriesReply{rf.CurrentTerm, false, rf.me, rf.LastIndex()}, true
 	}
 
-	if args.PrevLogIndex > baseidx {
-		term := rf.Log[args.PrevLogIndex-baseidx].Term
+	if args.PrevLogIndex > rf.BaseIndex() {
+		term := rf.Log[args.PrevLogIndex-rf.BaseIndex()].Term
 		if args.PrevLogTerm != term {
-			reply := AppendEntriesReply{rf.CurrentTerm, false, rf.me, baseidx}
-			for i := args.PrevLogIndex - 1; i > baseidx; i-- {
+			reply := AppendEntriesReply{rf.CurrentTerm, false, rf.me, rf.BaseIndex()}
+			for i := args.PrevLogIndex - 1; i > rf.BaseIndex(); i-- {
 
-				if rf.Log[i - baseidx].Term != term {
+				if rf.Log[i - rf.BaseIndex()].Term != term {
 					reply.LastMatch = max(i,rf.commitIndex)
 					break
 				}
@@ -87,37 +79,35 @@ func (rf *Raft) handleAppendEntries(args *AppendEntriesArgs) (AppendEntriesReply
 			return reply, true
 		}
 	}
-
-	if args.PrevLogIndex < baseidx {
-		return AppendEntriesReply{rf.CurrentTerm, false, EmptyVote, -1}, false
-	} else {
-		rf.Log = rf.Log[:args.PrevLogIndex + 1 - baseidx]
-		rf.Log = append(rf.Log, args.Entries...)
-	}
+	
+	rf.Log = rf.Log[:args.PrevLogIndex + 1 - rf.BaseIndex()]
+	rf.Log = append(rf.Log, args.Entries...)
+	
+	
 
 	if args.LeaderCommit > rf.commitIndex {
 		//apply this commit to state machine
-		idx := min(args.LeaderCommit, lastidx)
+		idx := min(args.LeaderCommit, rf.LastIndex())
 		//only commit current term log, befor logs will be commit
-		if rf.CurrentTerm == rf.Log[idx-baseidx].Term {
+		if rf.CurrentTerm == rf.Log[idx-rf.BaseIndex()].Term {
 			rf.commitIndex = idx
 			rf.applyNotice <- true
 		}
 	}
-	return AppendEntriesReply{rf.CurrentTerm, true, rf.me, lastidx}, true
+	return AppendEntriesReply{rf.CurrentTerm, true, rf.me, rf.LastIndex()}, true
 }
 
-func (rf *Raft) handleHeartResponse(reply *AppendEntriesReply) bool {
-	if !reply.Success {
-		if reply.Term > rf.CurrentTerm {
-			rf.updateCurrentTerm(reply.Term, EmptyVote)
-		}
-	} else {
+/*func (rf *Raft) handleHeartResponse(reply *AppendEntriesReply) bool {
+	if reply.Term > rf.CurrentTerm {
+		rf.updateCurrentTerm(reply.Term, EmptyVote)
+	}
+	
+	if reply.LastMatch > 0{
 		rf.matchIndex[reply.PeerId] = reply.LastMatch
 		rf.nextIndex[reply.PeerId] = reply.LastMatch + 1
 	}
 	return reply.Success
-}
+}*/
 
 func (rf *Raft) handleResponseAppend(reply *AppendEntriesReply, respChan chan *AppendEntriesReply, snapChan chan *SnatshotReply) bool {
 	if !reply.Success {
@@ -127,11 +117,11 @@ func (rf *Raft) handleResponseAppend(reply *AppendEntriesReply, respChan chan *A
 			//decrement nextIndex, resend append request to remote(reply.PeedId).
 			/*rf.nextIndex[reply.PeerId]--*/
 			rf.nextIndex[reply.PeerId] = reply.LastMatch + 1
-			rf.logmu.RLock()
+
+			rf.logmu.Lock()
 			rf.boatcastAppend(reply.PeerId, respChan, snapChan)
-			rf.logmu.RUnlock()
+			rf.logmu.Unlock()
 		}
-		
 	} else {
 		rf.matchIndex[reply.PeerId] = reply.LastMatch
 		rf.nextIndex[reply.PeerId] = reply.LastMatch + 1
@@ -142,7 +132,7 @@ func (rf *Raft) handleResponseAppend(reply *AppendEntriesReply, respChan chan *A
 func (rf *Raft) handleRequestAgreement(req *AgreementArgs, respChan chan *AppendEntriesReply, snapChan chan *SnatshotReply) AgreementRely {
 	//append this entry to local machine.
 	entry := Entry{rf.nextIndex[rf.me], rf.CurrentTerm, req.Command}
-	rf.logmu.RLock()
+	rf.logmu.Lock()
 	rf.Log = append(rf.Log, entry)
 	//to agreement with followers
 	for i := 0; i < len(rf.peers); i++ {
@@ -150,7 +140,7 @@ func (rf *Raft) handleRequestAgreement(req *AgreementArgs, respChan chan *Append
 			rf.boatcastAppend(i, respChan, snapChan)
 		}
 	}
-	rf.logmu.RUnlock()
+	rf.logmu.Unlock()
 	rf.persist()
 	rf.matchIndex[rf.me] = rf.nextIndex[rf.me]
 	rf.nextIndex[rf.me]++
@@ -161,16 +151,15 @@ func (rf *Raft) boatcastAppend(server int, respChan chan *AppendEntriesReply, sn
 	if rf.nextIndex[server] > rf.BaseIndex() {
 		prevIndex := rf.nextIndex[server] - 1
 		var entries []Entry
-		var args AppendEntriesArgs
-		if rf.nextIndex[server] <= rf.LastIndex() {
+		preTerm := rf.CurrentTerm
+		if prevIndex <= rf.LastIndex() {
 			entries = rf.Log[rf.nextIndex[server]-rf.BaseIndex():]
-			args = AppendEntriesArgs{rf.CurrentTerm, rf.me, prevIndex, rf.Log[prevIndex-rf.BaseIndex()].Term, entries, rf.commitIndex}
-		} else {
-			args = AppendEntriesArgs{rf.CurrentTerm, rf.me, prevIndex, 0, nil, rf.commitIndex}
+			preTerm = rf.Log[prevIndex-rf.BaseIndex()].Term
 		}
-		//rf.wg.Add(1)
+		args := AppendEntriesArgs{rf.CurrentTerm, rf.me, prevIndex, preTerm, entries, rf.commitIndex}
+
+
 		go func() {
-			//defer rf.wg.Done()
 			r := new(AppendEntriesReply)
 			ok := rf.sendAppendEntries(server, args, r)
 			if ok {
@@ -183,9 +172,7 @@ func (rf *Raft) boatcastAppend(server int, respChan chan *AppendEntriesReply, sn
 		args.LeaderId = rf.me
 		args.Data = rf.persister.ReadSnapshot()
 		args.LastIncludedIndex, args.LastIncludedTerm = rf.readMeta(args.Data)
-		//rf.wg.Add(1)
 		go func() {
-			//defer rf.wg.Done()
 			r := new(SnatshotReply)
 			ok := rf.sendInstallSnapshot(server, args, r)
 			if ok {
