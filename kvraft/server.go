@@ -32,7 +32,7 @@ type Op struct {
 
 type RaftKV struct {
 	mu      sync.Mutex
-	rwmu    sync.RWMutex
+	mapmu    sync.Mutex
 	me      int
 	rf      *raft.Raft
 	applyCh chan raft.ApplyMsg
@@ -86,13 +86,13 @@ func (kv *RaftKV) Get(args *GetArgs, reply *GetReply) {
 	} else {
 		reply.WrongLeader = false
 		//get state
-		kv.rwmu.RLock()
+		kv.mapmu.Lock()
 		if v, ok := kv.db[args.Key]; !ok {
 			reply.Err = ErrNoKey
 		} else {
 			reply.Value = v
 		}
-		kv.rwmu.RUnlock()
+		kv.mapmu.Unlock()
 	}
 }
 
@@ -160,7 +160,7 @@ func (kv *RaftKV) loop(maxraftstate int, persister *raft.Persister) {
 			kv.readSnatshot(entry.Snapshot)
 		} else {
 			command := entry.Command.(Op)
-			kv.rwmu.Lock()
+			kv.mapmu.Lock()
 			//apply change task to state machine
 			if command.Meth != "Get" && !kv.StaleTask(command.Client, command.Seq) {
 				switch command.Meth {
@@ -171,7 +171,7 @@ func (kv *RaftKV) loop(maxraftstate int, persister *raft.Persister) {
 				}
 				kv.chk[command.Client] = command.Seq
 			}
-			kv.rwmu.Unlock()
+			kv.mapmu.Unlock()
 
 			kv.mu.Lock()
 			//double check
@@ -183,22 +183,14 @@ func (kv *RaftKV) loop(maxraftstate int, persister *raft.Persister) {
 
 			//check snapshot
 			if maxraftstate != -1 && persister.RaftStateSize() > maxraftstate {
-				go func() {
-					if !kv.rf.Snapshoting() {
-						kv.rf.SetSnapshot(true)
-						//snapshot
-						w := new(bytes.Buffer)
-						e := gob.NewEncoder(w)
-						//state
-						kv.rwmu.RLock()
-						e.Encode(kv.db)
-						e.Encode(kv.chk)
-						kv.rwmu.RUnlock()
-						data := w.Bytes()
-						kv.rf.TakeSnatshot(data, entry.Index)
-						kv.rf.SetSnapshot(false)
-					}
-				}()
+				//snapshot
+				w := new(bytes.Buffer)
+				e := gob.NewEncoder(w)
+				//state
+				e.Encode(kv.db)
+				e.Encode(kv.chk)
+				data := w.Bytes()
+				go kv.rf.TakeSnatshot(data, entry.Index, maxraftstate)
 			}
 		}
 	}
@@ -212,8 +204,8 @@ func (kv *RaftKV) readSnatshot(data []byte) {
 	d := gob.NewDecoder(r)
 	d.Decode(&lastIncludeIndex)
 	d.Decode(&lastIncludeTerm)
-	kv.rwmu.Lock()
+	kv.mapmu.Lock()
 	d.Decode(&kv.db)
 	d.Decode(&kv.chk)
-	kv.rwmu.Unlock()
+	kv.mapmu.Unlock()
 }

@@ -5,11 +5,11 @@ import "encoding/gob"
 
 //import "fmt"
 
-func (rf *Raft) TakeSnatshot(snapstate []byte, preindex int) {
+func (rf *Raft) TakeSnatshot(snapstate []byte, preindex int, maxraftstate int) {
 	rf.logmu.Lock()
 	defer rf.logmu.Unlock()
-
-	if preindex <= rf.BaseIndex() || preindex > rf.lastApplied {
+	defer rf.persist()
+	if preindex <= rf.BaseIndex() || preindex > rf.lastApplied || rf.persister.RaftStateSize() < maxraftstate{
 		return
 	}
 
@@ -26,7 +26,7 @@ func (rf *Raft) TakeSnatshot(snapstate []byte, preindex int) {
 	//compaction, drop rf.Log through preindex, garbage collection
 	//index 0 is guard, eliminate slice index out range
 	rf.Log = rf.Log[preindex-rf.BaseIndex():]
-	rf.persist()
+	
 }
 
 type SnatshotArgs struct {
@@ -60,11 +60,10 @@ func (rf *Raft) handleInstallSnapshot(args *SnatshotArgs) (SnatshotReply, bool) 
 		rf.VotedFor = args.LeaderId
 	}
 	defer rf.persist()
-	rf.logmu.Lock()
 	//snapshot
 	rf.persister.SaveSnapshot(args.Data)
-
 	//compaction, drop rf.Log through preindex, garbage collection
+	rf.logmu.Lock()
 	var newLog []Entry
 	//rf.Log always has a guard
 	newLog = append(newLog, Entry{args.LastIncludedIndex, args.LastIncludedTerm, nil})
@@ -77,7 +76,7 @@ func (rf *Raft) handleInstallSnapshot(args *SnatshotArgs) (SnatshotReply, bool) 
 	rf.Log = newLog
 	reply := SnatshotReply{Term: rf.CurrentTerm, PeerId: rf.me, LastInclude: rf.LastIndex()}
 	rf.logmu.Unlock()
-	
+
 	rf.commitIndex = args.LastIncludedIndex
 	rf.lastApplied = args.LastIncludedIndex
 

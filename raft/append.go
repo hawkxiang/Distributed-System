@@ -51,17 +51,16 @@ func (rf *Raft) handleAppendEntries(args *AppendEntriesArgs) (AppendEntriesReply
 		
 		rf.VotedFor = args.LeaderId
 		
-	}
-	defer rf.persist()
-
-	rf.logmu.Lock()
-	defer rf.logmu.Unlock()
+	} 
 	
 	if args.PrevLogIndex < rf.commitIndex {
 		return AppendEntriesReply{rf.CurrentTerm, false, rf.me, rf.commitIndex}, true 
 	}
 
+	rf.logmu.Lock()
+	
 	if args.PrevLogIndex > rf.LastIndex() {
+		rf.logmu.Unlock()
 		return AppendEntriesReply{rf.CurrentTerm, false, rf.me, rf.LastIndex()}, true
 	}
 
@@ -70,20 +69,17 @@ func (rf *Raft) handleAppendEntries(args *AppendEntriesArgs) (AppendEntriesReply
 		if args.PrevLogTerm != term {
 			reply := AppendEntriesReply{rf.CurrentTerm, false, rf.me, rf.BaseIndex()}
 			for i := args.PrevLogIndex - 1; i > rf.BaseIndex(); i-- {
-
 				if rf.Log[i - rf.BaseIndex()].Term != term {
 					reply.LastMatch = max(i,rf.commitIndex)
 					break
 				}
 			}
+			rf.logmu.Unlock()
 			return reply, true
 		}
 	}
-	
 	rf.Log = rf.Log[:args.PrevLogIndex + 1 - rf.BaseIndex()]
 	rf.Log = append(rf.Log, args.Entries...)
-	
-	
 
 	if args.LeaderCommit > rf.commitIndex {
 		//apply this commit to state machine
@@ -94,10 +90,13 @@ func (rf *Raft) handleAppendEntries(args *AppendEntriesArgs) (AppendEntriesReply
 			rf.applyNotice <- true
 		}
 	}
-	return AppendEntriesReply{rf.CurrentTerm, true, rf.me, rf.LastIndex()}, true
+	r := AppendEntriesReply{rf.CurrentTerm, true, rf.me, rf.LastIndex()}
+	rf.logmu.Unlock()
+	rf.persist()
+	return r, true
 }
 
-/*func (rf *Raft) handleHeartResponse(reply *AppendEntriesReply) bool {
+func (rf *Raft) handleHeartResponse(reply *AppendEntriesReply) bool {
 	if reply.Term > rf.CurrentTerm {
 		rf.updateCurrentTerm(reply.Term, EmptyVote)
 	}
@@ -107,7 +106,7 @@ func (rf *Raft) handleAppendEntries(args *AppendEntriesArgs) (AppendEntriesReply
 		rf.nextIndex[reply.PeerId] = reply.LastMatch + 1
 	}
 	return reply.Success
-}*/
+}
 
 func (rf *Raft) handleResponseAppend(reply *AppendEntriesReply, respChan chan *AppendEntriesReply, snapChan chan *SnatshotReply) bool {
 	if !reply.Success {
@@ -151,14 +150,12 @@ func (rf *Raft) boatcastAppend(server int, respChan chan *AppendEntriesReply, sn
 	if rf.nextIndex[server] > rf.BaseIndex() {
 		prevIndex := rf.nextIndex[server] - 1
 		var entries []Entry
-		preTerm := rf.CurrentTerm
+		preTerm := -1
 		if prevIndex <= rf.LastIndex() {
 			entries = rf.Log[rf.nextIndex[server]-rf.BaseIndex():]
 			preTerm = rf.Log[prevIndex-rf.BaseIndex()].Term
 		}
 		args := AppendEntriesArgs{rf.CurrentTerm, rf.me, prevIndex, preTerm, entries, rf.commitIndex}
-
-
 		go func() {
 			r := new(AppendEntriesReply)
 			ok := rf.sendAppendEntries(server, args, r)

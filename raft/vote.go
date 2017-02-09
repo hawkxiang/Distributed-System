@@ -56,13 +56,6 @@ func (rf *Raft) handleRequestVote(args *RequestVoteArgs) (RequestVoteReply, bool
 	} else {
 		return RequestVoteReply{rf.CurrentTerm, false}, false
 	}
-	/*if lastLogIndex > args.LastLogIndex || lastLogTerm > args.LastLogTerm {
-		// reject this remove server vote
-		return RequestVoteReply{rf.CurrentTerm, false}, false
-	} else {
-		rf.VotedFor = args.CandidateId
-		return RequestVoteReply{rf.CurrentTerm, true}, true
-	}*/
 }
 
 func (rf *Raft) handleResponseVote(reply *RequestVoteReply) bool {

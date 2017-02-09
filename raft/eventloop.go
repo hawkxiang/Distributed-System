@@ -145,12 +145,13 @@ func (rf *Raft) leaderLoop() {
 
 	for rf.state == Leader {
 		if heartbeats {
-			
+			rf.logmu.Lock()
 			for i := 0; i < len(rf.peers); i++ {
 				if i != rf.me {
 					rf.boatcastAppend(i, respChan, snapChan)
 				}
 			}
+			rf.logmu.Unlock()
 			timeoutChan = random(HeartbeatInterval, HeartbeatInterval)
 			heartbeats = false
 		}

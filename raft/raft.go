@@ -96,7 +96,6 @@ type Raft struct {
 
 	//wait works goroutine end
 	wg sync.WaitGroup
-	pendingSnap bool
 }
 
 //give message to event loop, event loop use handle to do.
@@ -133,13 +132,10 @@ func (rf *Raft) ChangeState(newstate int) {
 		num := len(rf.peers)
 		rf.nextIndex = make([]int, num)
 		rf.matchIndex = make([]int, num)
-		rf.logmu.Lock()
-		baseidx := rf.BaseIndex()
-		lastidx := rf.LastIndex()
-		rf.logmu.Unlock()
-		for i:= 0; i < num; i++ {
+		
+		for i, lastidx:= 0, rf.LastIndex(); i < num; i++ {
 			//TODO:
-			rf.matchIndex[i] = baseidx
+			rf.matchIndex[i] = 0
 			rf.nextIndex[i] = lastidx + 1
 		}
 	}
@@ -152,17 +148,6 @@ func (rf *Raft) State() int {
 	return rf.state
 }
 
-func (rf *Raft) Snapshoting() bool {
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
-	return rf.pendingSnap
-}
-
-func (rf *Raft) SetSnapshot(v bool) {
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
-	rf.pendingSnap = v
-}
 
 func (rf *Raft) updateCurrentTerm(newterm int, newleader int) {
 	if rf.state != Follower {
@@ -350,8 +335,6 @@ func makeServer(peers []*labrpc.ClientEnd, me int, persister *Persister) *Raft {
 
 		blockqueue:  make(chan *message, 64),
 		applyNotice: make(chan bool, 32),
-
-		pendingSnap: false,
 	}
 	return rf
 }
