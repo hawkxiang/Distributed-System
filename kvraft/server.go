@@ -71,7 +71,7 @@ func (kv *RaftKV) DuplicateLog(entry Op) bool {
 	select {
 	case op := <-ch:
 		return op == entry
-	case <-time.After(600 * time.Millisecond):
+	case <-time.After(500 * time.Millisecond):
 		return false
 	}
 }
