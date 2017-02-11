@@ -71,7 +71,7 @@ func (kv *RaftKV) DuplicateLog(entry Op) bool {
 	select {
 	case op := <-ch:
 		return op == entry
-	case <-time.After(500 * time.Millisecond):
+	case <-time.After(1000 * time.Millisecond):
 		return false
 	}
 }
@@ -183,6 +183,8 @@ func (kv *RaftKV) loop(maxraftstate int, persister *raft.Persister) {
 
 			//check snapshot
 			if maxraftstate != -1 && persister.RaftStateSize() > maxraftstate {
+				recover := maxraftstate
+				maxraftstate = -1
 				//snapshot
 				w := new(bytes.Buffer)
 				e := gob.NewEncoder(w)
@@ -190,7 +192,10 @@ func (kv *RaftKV) loop(maxraftstate int, persister *raft.Persister) {
 				e.Encode(kv.db)
 				e.Encode(kv.chk)
 				data := w.Bytes()
-				go kv.rf.TakeSnatshot(data, entry.Index, maxraftstate)
+				go func(snapstate []byte, preindex int, maxraftstate *int, recover int){
+				 	kv.rf.TakeSnatshot(snapstate, preindex)
+				 	*maxraftstate = recover
+				 }(data, entry.Index, &maxraftstate, recover)
 			}
 		}
 	}

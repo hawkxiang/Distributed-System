@@ -2,14 +2,12 @@ package raft
 
 import "bytes"
 import "encoding/gob"
-
 //import "fmt"
 
-func (rf *Raft) TakeSnatshot(snapstate []byte, preindex int, maxraftstate int) {
+func (rf *Raft) TakeSnatshot(snapstate []byte, preindex int) {
 	rf.logmu.Lock()
 	defer rf.logmu.Unlock()
-	defer rf.persist()
-	if preindex <= rf.BaseIndex() || preindex > rf.lastApplied || rf.persister.RaftStateSize() < maxraftstate{
+	if preindex <= rf.BaseIndex() || preindex > rf.lastApplied {
 		return
 	}
 
@@ -26,8 +24,39 @@ func (rf *Raft) TakeSnatshot(snapstate []byte, preindex int, maxraftstate int) {
 	//compaction, drop rf.Log through preindex, garbage collection
 	//index 0 is guard, eliminate slice index out range
 	rf.Log = rf.Log[preindex-rf.BaseIndex():]
-	
+	rf.persist()
 }
+
+/*func (rf *Raft) TakeSnatshot(snapstate []byte, preindex int, maxraftstate int) {
+	rf.mu.Lock()
+
+	snapLog := rf.Log
+	baseidx := snapLog[0].Index
+	if preindex <= baseidx || preindex > rf.lastApplied || rf.persister.RaftStateSize() < maxraftstate{
+		rf.mu.Unlock()
+		return
+	}
+
+	//snapshot
+	w := new(bytes.Buffer)
+	e := gob.NewEncoder(w)
+	//meta
+	e.Encode(preindex)
+	e.Encode(snapLog[preindex-baseidx].Term)
+	data := w.Bytes()
+	data = append(data, snapstate...)
+	rf.persister.SaveSnapshot(data)
+	rf.snapPersist(snapLog[preindex-baseidx:])
+
+	rf.mu.Unlock()
+	//compaction, drop rf.Log through preindex, garbage collection
+	//index 0 is guard, eliminate slice index out range
+	rf.logmu.Lock()
+	fmt.Printf("me: %d, leader: %d,pre: %d, base: %d, len: %d\n",rf.me, rf.VotedFor, preindex, rf.BaseIndex(), len(rf.Log))
+	rf.Log = rf.Log[preindex-rf.BaseIndex():]
+	rf.logmu.Unlock()
+	
+}*/
 
 type SnatshotArgs struct {
 	Term              int

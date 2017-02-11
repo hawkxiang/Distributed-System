@@ -58,9 +58,9 @@ func (rf *Raft) handleAppendEntries(args *AppendEntriesArgs) (AppendEntriesReply
 	}
 
 	rf.logmu.Lock()
-	
+	defer rf.logmu.Unlock()
+	defer rf.persist()
 	if args.PrevLogIndex > rf.LastIndex() {
-		rf.logmu.Unlock()
 		return AppendEntriesReply{rf.CurrentTerm, false, rf.me, rf.LastIndex()}, true
 	}
 
@@ -74,12 +74,12 @@ func (rf *Raft) handleAppendEntries(args *AppendEntriesArgs) (AppendEntriesReply
 					break
 				}
 			}
-			rf.logmu.Unlock()
 			return reply, true
 		}
 	}
 	rf.Log = rf.Log[:args.PrevLogIndex + 1 - rf.BaseIndex()]
 	rf.Log = append(rf.Log, args.Entries...)
+	
 
 	if args.LeaderCommit > rf.commitIndex {
 		//apply this commit to state machine
@@ -91,8 +91,7 @@ func (rf *Raft) handleAppendEntries(args *AppendEntriesArgs) (AppendEntriesReply
 		}
 	}
 	r := AppendEntriesReply{rf.CurrentTerm, true, rf.me, rf.LastIndex()}
-	rf.logmu.Unlock()
-	rf.persist()
+	
 	return r, true
 }
 

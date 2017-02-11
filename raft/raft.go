@@ -206,7 +206,6 @@ func (rf *Raft) persist() {
 	data := w.Bytes()
 	rf.persister.SaveRaftState(data)
 }
-
 //
 // restore previously persisted state.
 //
