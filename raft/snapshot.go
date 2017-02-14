@@ -5,8 +5,8 @@ import "encoding/gob"
 //import "fmt"
 
 func (rf *Raft) TakeSnatshot(snapstate []byte, preindex int) {
-	rf.logmu.Lock()
-	defer rf.logmu.Unlock()
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 	if preindex <= rf.BaseIndex() || preindex > rf.lastApplied {
 		return
 	}
@@ -88,11 +88,11 @@ func (rf *Raft) handleInstallSnapshot(args *SnatshotArgs) (SnatshotReply, bool) 
 	} else {
 		rf.VotedFor = args.LeaderId
 	}
-	defer rf.persist()
+	
 	//snapshot
 	rf.persister.SaveSnapshot(args.Data)
 	//compaction, drop rf.Log through preindex, garbage collection
-	rf.logmu.Lock()
+	rf.mu.Lock()
 	var newLog []Entry
 	//rf.Log always has a guard
 	newLog = append(newLog, Entry{args.LastIncludedIndex, args.LastIncludedTerm, nil})
@@ -104,7 +104,8 @@ func (rf *Raft) handleInstallSnapshot(args *SnatshotArgs) (SnatshotReply, bool) 
 	}
 	rf.Log = newLog
 	reply := SnatshotReply{Term: rf.CurrentTerm, PeerId: rf.me, LastInclude: rf.LastIndex()}
-	rf.logmu.Unlock()
+	rf.persist()
+	rf.mu.Unlock()
 
 	rf.commitIndex = args.LastIncludedIndex
 	rf.lastApplied = args.LastIncludedIndex

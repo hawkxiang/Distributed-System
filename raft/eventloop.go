@@ -61,23 +61,21 @@ func (rf *Raft) candidateLoop() {
 		//send vote to all the nodes
 		if doVote {
 			//change local state
-			rf.mu.Lock()
+			//rf.mu.Lock()
 			rf.CurrentTerm++
 			rf.VotedFor = rf.me
-			rf.mu.Unlock()
+			//rf.mu.Unlock()
 			rf.persist()
 
 			timeoutChan = random(ElectionTimeout, 2*ElectionTimeout)
 			// Send RequestVote RPCs to all other servers
-			respChan = make(chan *RequestVoteReply, len(rf.peers)-1)
+			respChan = make(chan *RequestVoteReply, 32)
 			lastLogIndex := rf.LastIndex()
 			lastLogTerm := rf.Log[lastLogIndex-rf.BaseIndex()].Term
 
 			for i := 0; i < len(rf.peers); i++ {
 				if i != rf.me {
-					rf.wg.Add(1)
 					go func(server int) {
-						defer rf.wg.Done()
 						r := new(RequestVoteReply)
 						ok := rf.sendRequestVote(server, RequestVoteArgs{rf.CurrentTerm, rf.me, lastLogIndex, lastLogTerm}, r)
 						if ok {
@@ -139,19 +137,19 @@ func (rf *Raft) leaderLoop() {
 	commitSync := make(map[int]bool)
 	var timeoutChan <-chan time.Time
 	
-	respChan := make(chan *AppendEntriesReply, len(rf.peers)*3)
+	respChan := make(chan *AppendEntriesReply, 64)
 	//snapshot reply
-	snapChan := make(chan *SnatshotReply, len(rf.peers))
+	snapChan := make(chan *SnatshotReply, 32)
 
 	for rf.state == Leader {
 		if heartbeats {
-			rf.logmu.Lock()
+			rf.mu.Lock()
 			for i := 0; i < len(rf.peers); i++ {
 				if i != rf.me {
 					rf.boatcastAppend(i, respChan, snapChan)
 				}
 			}
-			rf.logmu.Unlock()
+			rf.mu.Unlock()
 			timeoutChan = random(HeartbeatInterval, HeartbeatInterval)
 			heartbeats = false
 		}

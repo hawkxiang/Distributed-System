@@ -64,7 +64,6 @@ func checkClntAppends(t *testing.T, clnt int, v string, count int) {
 		}
 		off1 := strings.LastIndex(v, wanted)
 		if off1 != off {
-			fmt.Printf("off1 %v off %v\n", off1, off)
 			t.Fatalf("duplicate element %v in Append result", wanted)
 		}
 		if off <= lastoff {
@@ -143,11 +142,10 @@ func GenericTest(t *testing.T, tag string, nclients int, unreliable bool, crash 
 		clnts[i] = make(chan int)
 	}
 	for i := 0; i < 3; i++ {
-		//log.Printf("Iteration %v\n", i)
+		// log.Printf("Iteration %v\n", i)
 		atomic.StoreInt32(&done_clients, 0)
 		atomic.StoreInt32(&done_partitioner, 0)
 		go spawn_clients_and_wait(t, cfg, nclients, func(cli int, myck *Clerk, t *testing.T) {
-
 			j := 0
 			defer func() {
 				clnts[cli] <- j
@@ -465,10 +463,10 @@ func TestSnapshotRecoverManyClients(t *testing.T) {
 	GenericTest(t, "snapshotunreliable", 20, false, true, false, 1000)
 }
 
-/*func TestSnapshotUnreliable(t *testing.T) {
+func TestSnapshotUnreliable(t *testing.T) {
 	fmt.Printf("Test: persistence with several clients, snapshots, unreliable ...\n")
 	GenericTest(t, "snapshotunreliable", 5, true, false, false, 1000)
-}*/
+}
 
 func TestSnapshotUnreliableRecover(t *testing.T) {
 	fmt.Printf("Test: persistence with several clients, failures, and snapshots, unreliable ...\n")

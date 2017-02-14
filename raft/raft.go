@@ -66,7 +66,6 @@ type Entry struct {
 //
 type Raft struct {
 	mu        sync.Mutex
-	logmu     sync.Mutex
 	peers     []*labrpc.ClientEnd
 	persister *Persister
 	me        int // index into peers[]
@@ -113,8 +112,8 @@ func (rf *Raft) GetState() (int, bool) {
 	var isleader bool
 	// Your code here.
 	isleader = false
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
+	//rf.mu.Lock()
+	//defer rf.mu.Unlock()
 
 	term = rf.CurrentTerm
 	if rf.state == Leader {
@@ -124,8 +123,8 @@ func (rf *Raft) GetState() (int, bool) {
 }
 
 func (rf *Raft) ChangeState(newstate int) {
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
+	//rf.mu.Lock()
+	//defer rf.mu.Unlock()
 
 	rf.state = newstate
 	if newstate == Leader {
@@ -143,8 +142,8 @@ func (rf *Raft) ChangeState(newstate int) {
 }
 
 func (rf *Raft) State() int {
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
+	//rf.mu.Lock()
+	//defer rf.mu.Unlock()
 	return rf.state
 }
 
@@ -154,16 +153,15 @@ func (rf *Raft) updateCurrentTerm(newterm int, newleader int) {
 		rf.ChangeState(Follower)
 	}
 
-	rf.mu.Lock()
+	//rf.mu.Lock()
 	rf.CurrentTerm = newterm
-	rf.mu.Unlock()
+	//rf.mu.Unlock()
 	rf.VotedFor = newleader
-	rf.persist()
 }
 
 func (rf *Raft) Running() bool {
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
+	//rf.mu.Lock()
+	//defer rf.mu.Unlock()
 	return (rf.state != Initialized && rf.state != Stopped)
 }
 
@@ -457,12 +455,22 @@ func (rf *Raft) applyLoop() {
 			return
 
 		case <-rf.applyNotice:
-			if rf.lastApplied >= rf.BaseIndex(){
-				for rf.commitIndex > rf.lastApplied {
+			//copy on write
+			var applyLog []Entry
+			commitidx := -1
+			rf.mu.Lock()
+			if rf.lastApplied >= rf.BaseIndex() {
+				applyLog = rf.Log
+				commitidx = rf.commitIndex
+			}
+			rf.mu.Unlock()
+			if applyLog != nil{
+				for commitidx > rf.lastApplied {
 					rf.lastApplied++
-					rf.applyCh <- ApplyMsg{rf.lastApplied, rf.Log[rf.lastApplied-rf.BaseIndex()].Command, false, nil}
+					rf.applyCh <- ApplyMsg{rf.lastApplied, applyLog[rf.lastApplied-applyLog[0].Index].Command, false, nil}
 				}
 			}
+			
 		}
 	}
 }

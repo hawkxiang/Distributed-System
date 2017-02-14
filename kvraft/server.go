@@ -66,12 +66,12 @@ func (kv *RaftKV) DuplicateLog(entry Op) bool {
 		kv.reflect[idx] = ch
 	}
 	kv.mu.Unlock()
-
+	
 	//wait to commit
 	select {
 	case op := <-ch:
 		return op == entry
-	case <-time.After(1000 * time.Millisecond):
+	case <-time.After(600 * time.Millisecond):
 		return false
 	}
 }
@@ -98,7 +98,6 @@ func (kv *RaftKV) Get(args *GetArgs, reply *GetReply) {
 
 func (kv *RaftKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	// Your code here.
-
 	command := Op{Meth: args.Op, Key: args.Key, Value: args.Value, Client: args.Client, Seq: args.Seq}
 	if ok := kv.DuplicateLog(command); !ok {
 		reply.WrongLeader = true
@@ -175,11 +174,21 @@ func (kv *RaftKV) loop(maxraftstate int, persister *raft.Persister) {
 
 			kv.mu.Lock()
 			//double check
-			if _, ok := kv.reflect[entry.Index]; !ok {
+			ch, ok := kv.reflect[entry.Index]
+			if ok {
+				select {
+					//drain bad data
+					case <-kv.reflect[entry.Index]:
+					default:
+				}
+				ch <- command
+			}
+			kv.mu.Unlock()
+			/*if _, ok := kv.reflect[entry.Index]; !ok {
 				kv.reflect[entry.Index] = make(chan Op, 1)
 			}
 			kv.mu.Unlock()
-			kv.reflect[entry.Index] <- command
+			kv.reflect[entry.Index] <- command*/
 
 			//check snapshot
 			if maxraftstate != -1 && persister.RaftStateSize() > maxraftstate {

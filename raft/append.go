@@ -57,8 +57,8 @@ func (rf *Raft) handleAppendEntries(args *AppendEntriesArgs) (AppendEntriesReply
 		return AppendEntriesReply{rf.CurrentTerm, false, rf.me, rf.commitIndex}, true 
 	}
 
-	rf.logmu.Lock()
-	defer rf.logmu.Unlock()
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 	defer rf.persist()
 	if args.PrevLogIndex > rf.LastIndex() {
 		return AppendEntriesReply{rf.CurrentTerm, false, rf.me, rf.LastIndex()}, true
@@ -79,7 +79,6 @@ func (rf *Raft) handleAppendEntries(args *AppendEntriesArgs) (AppendEntriesReply
 	}
 	rf.Log = rf.Log[:args.PrevLogIndex + 1 - rf.BaseIndex()]
 	rf.Log = append(rf.Log, args.Entries...)
-	
 
 	if args.LeaderCommit > rf.commitIndex {
 		//apply this commit to state machine
@@ -116,9 +115,9 @@ func (rf *Raft) handleResponseAppend(reply *AppendEntriesReply, respChan chan *A
 			/*rf.nextIndex[reply.PeerId]--*/
 			rf.nextIndex[reply.PeerId] = reply.LastMatch + 1
 
-			rf.logmu.Lock()
+			rf.mu.Lock()
 			rf.boatcastAppend(reply.PeerId, respChan, snapChan)
-			rf.logmu.Unlock()
+			rf.mu.Unlock()
 		}
 	} else {
 		rf.matchIndex[reply.PeerId] = reply.LastMatch
@@ -130,7 +129,7 @@ func (rf *Raft) handleResponseAppend(reply *AppendEntriesReply, respChan chan *A
 func (rf *Raft) handleRequestAgreement(req *AgreementArgs, respChan chan *AppendEntriesReply, snapChan chan *SnatshotReply) AgreementRely {
 	//append this entry to local machine.
 	entry := Entry{rf.nextIndex[rf.me], rf.CurrentTerm, req.Command}
-	rf.logmu.Lock()
+	rf.mu.Lock()
 	rf.Log = append(rf.Log, entry)
 	//to agreement with followers
 	for i := 0; i < len(rf.peers); i++ {
@@ -138,7 +137,7 @@ func (rf *Raft) handleRequestAgreement(req *AgreementArgs, respChan chan *Append
 			rf.boatcastAppend(i, respChan, snapChan)
 		}
 	}
-	rf.logmu.Unlock()
+	rf.mu.Unlock()
 	rf.persist()
 	rf.matchIndex[rf.me] = rf.nextIndex[rf.me]
 	rf.nextIndex[rf.me]++

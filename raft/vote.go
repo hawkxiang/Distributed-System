@@ -45,10 +45,10 @@ func (rf *Raft) handleRequestVote(args *RequestVoteArgs) (RequestVoteReply, bool
 		// reject this remove server vote
 		return RequestVoteReply{rf.CurrentTerm, false}, false
 	}
-	rf.logmu.Lock()
+	rf.mu.Lock()
 	lastLogIndex := rf.LastIndex()
 	lastLogTerm := rf.Log[lastLogIndex-rf.BaseIndex()].Term
-	rf.logmu.Unlock()
+	rf.mu.Unlock()
 	if args.LastLogTerm > lastLogTerm || (args.LastLogTerm == lastLogTerm && args.LastLogIndex >= lastLogIndex) {
 		//Vote
 		rf.Vote(args.CandidateId)

@@ -407,9 +407,7 @@ func (cfg *config) one(cmd int, expectedServers int) int {
 			// submitted our command; wait a while for agreement.
 			t1 := time.Now()
 			for time.Since(t1).Seconds() < 2 {
-				//fmt.Printf("one function index: %d\n", index)
 				nd, cmd1 := cfg.nCommitted(index)
-				
 				if nd > 0 && nd >= expectedServers {
 					// committed
 					if cmd2, ok := cmd1.(int); ok && cmd2 == cmd {
