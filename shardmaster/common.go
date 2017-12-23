@@ -39,6 +39,8 @@ type Err string
 
 type JoinArgs struct {
 	Servers map[int][]string // new GID -> servers mappings
+	Client 	int64
+	Seq 	int
 }
 
 type JoinReply struct {
@@ -48,6 +50,8 @@ type JoinReply struct {
 
 type LeaveArgs struct {
 	GIDs []int
+	Client 	int64
+	Seq 	int
 }
 
 type LeaveReply struct {
@@ -58,6 +62,8 @@ type LeaveReply struct {
 type MoveArgs struct {
 	Shard int
 	GID   int
+	Client 	int64
+	Seq 	int
 }
 
 type MoveReply struct {
@@ -67,10 +73,24 @@ type MoveReply struct {
 
 type QueryArgs struct {
 	Num int // desired config number
+	Client 	int64
+	Seq 	int
 }
 
 type QueryReply struct {
 	WrongLeader bool
 	Err         Err
 	Config      Config
+}
+
+const (
+	JOIN = iota
+	LEAVE
+	MOVE
+	QUERY
+)
+
+type MovePair struct {
+	From	int
+	To		int
 }

@@ -50,6 +50,7 @@ func check(t *testing.T, groups []int, ck *Clerk) {
 	if max > min+1 {
 		t.Fatalf("max %v too much larger than min %v", max, min)
 	}
+
 }
 
 func check_same_config(t *testing.T, c1 Config, c2 Config) {
@@ -203,6 +204,7 @@ func TestBasic(t *testing.T) {
 			cka[i].Leave([]int{gid + 1000})
 		}(xi)
 	}
+
 	for i := 0; i < npara; i++ {
 		<-ch
 	}
