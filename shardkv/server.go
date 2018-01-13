@@ -1,6 +1,5 @@
 package shardkv
 
-
 // import "shardmaster"
 import "labrpc"
 import "raft"
@@ -12,20 +11,20 @@ import (
 	"shardmaster"
 )
 
-
-
 type Op struct {
 	// Your definitions here.
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
-	Meth	string
-	Client 	int64
-	Seq 	int
-	Key 	string
-	Value 	string
-	Shard 	int
-	Config shardmaster.Config
-	Reconfig	GetShardReply
+	Meth string
+	GetArgc  GetArgs
+	PutArgc PutAppendArgs
+	ReCfg ReconfigureArgs
+}
+
+type Result struct {
+	meth  string
+	args  interface{}
+	reply interface{}
 }
 
 type ShardKV struct {
@@ -41,100 +40,118 @@ type ShardKV struct {
 	// Your definitions here.
 	sm      *shardmaster.Clerk
 	config  shardmaster.Config
-	db 		map[string]string
+	db      [shardmaster.NShards]map[string]string
 	taskSeq map[int64]int
-	shards 	map[int]string
-	dbmu	sync.Mutex
-	reflect map[int]chan Err
-	reflect_content map[int] map[string]string
-	reflect_task map[int] map[int64]int
-
+	messages map[int]chan Result
 }
 
 func (kv *ShardKV) StaleTask(client int64, seq int) bool {
-	if lastseq, ok := kv.taskSeq[client]; ok {
-		return lastseq >= seq
+	if lastseq, ok := kv.taskSeq[client]; ok && lastseq >= seq {
+		return true
 	}
+	kv.taskSeq[client] = seq
 	return false
 }
 
-func (kv *ShardKV) DuplicateLog(entry *Op) (Err, int) {
-	idx, _, isLeader := kv.rf.Start(*entry)
-	if !isLeader {
-		return "", -1
+func (kv *ShardKV) CheckValidKey(key string) bool {
+	shardID := key2shard(key)
+	if kv.gid != kv.config.Shards[shardID] {
+		return false
 	}
-
-	kv.mu.Lock()
-	ch, ok := kv.reflect[idx]
-	if !ok {
-		ch = make(chan Err, 1)
-		kv.reflect[idx] = ch
-	}
-	kv.mu.Unlock()
-
-	select {
-	case ret := <-ch:
-			return ret, idx
-	case <-time.After(600 * time.Millisecond):
-		return TimeOut, 0
-	}
+	return true
 }
 
 func (kv *ShardKV) Get(args *GetArgs, reply *GetReply) {
 	// Your code here.
-	command := Op{Meth:"Get", Key:args.Key, Shard:key2shard(args.Key)}
-
-	err, idx := kv.DuplicateLog(&command)
-	reply.WrongLeader = false
-	reply.Err = err
-	if -1 == idx {
+	idx, _, isLeader := kv.rf.Start(Op{Meth: "Get", GetArgc:*args})
+	if !isLeader {
 		reply.WrongLeader = true
-	} else if OK == err {
-		kv.dbmu.Lock()
-		if v, ok := kv.db[args.Key]; !ok {
-			reply.Err = ErrNoKey
-		} else {
-			reply.Value = v
-		}
-		kv.dbmu.Unlock()
-	}
-}
-
-func (kv *ShardKV) GetShard(args *GetShardArgs, reply *GetShardReply) {
-
-	shard := args.Shard
-	reply.Content = make(map[string]string)
-	reply.TaskSeq = make(map[int64]int)
-	kv.dbmu.Lock()
-	defer kv.dbmu.Unlock()
-	if kv.config.Num < args.CfgNum {
-		reply.Err = ErrNotReady
 		return
 	}
-	for key := range kv.db {
-		if key2shard(key) == shard {
-			reply.Content[key] = kv.db[key]
-			//删除本地状态，不在这里实现，可能迁移消息丢失，确保后删除冗余信息
-			//delete(kv.db, key)
-		}
-	}
 
-	for key := range kv.taskSeq {
-		reply.TaskSeq[key] = kv.taskSeq[key]
+	kv.mu.Lock()
+	ch, ok := kv.messages[idx]
+	if !ok {
+		ch = make(chan Result, 1)
+		kv.messages[idx] = ch
+	}
+	kv.mu.Unlock()
+	
+	select {
+	case msg := <- ch:
+		if retargs, ok := msg.args.(GetArgs); !ok {
+			reply.WrongLeader = true
+		} else {
+			if args.Client != retargs.Client || args.Seq != retargs.Seq {
+				reply.WrongLeader = true
+			} else {
+				*reply = msg.reply.(GetReply)
+				reply.WrongLeader = false
+			}
+		}
+	case <- time.After(400 * time.Millisecond):
+		reply.WrongLeader = true
 	}
 }
 
 func (kv *ShardKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	// Your code here.
-	command := Op{Meth:args.Op, Key:args.Key, Value:args.Value, Client:args.Client, Seq:args.Seq, Shard:key2shard(args.Key)}
-	err, idx := kv.DuplicateLog(&command)
-	reply.WrongLeader = false
-	reply.Err = err
+	idx, _, isLeader := kv.rf.Start(Op{Meth: "PutAppend", PutArgc:*args})
+		if !isLeader {
+			reply.WrongLeader = true
+			return
+		}
+		kv.mu.Lock()
+		ch, ok := kv.messages[idx]
+		if !ok {
+			ch = make(chan Result, 1)
+			kv.messages[idx] = ch
+		}
+		kv.mu.Unlock()
+	
+		select {
+		case msg := <- ch:
+			if retargs, ok := msg.args.(PutAppendArgs); !ok {
+				reply.WrongLeader = true
+			} else {
+				if args.Client != retargs.Client || args.Seq != retargs.Seq {
+					reply.WrongLeader = true
+				} else {
+					reply.Err = msg.reply.(PutAppendReply).Err
+					reply.WrongLeader = false
+				}
+			}
+		case <- time.After(400 * time.Millisecond):
+			reply.WrongLeader = true
+		}
+}
 
-	if -1 == idx {
-		reply.WrongLeader = true
+func (kv *ShardKV) GetShard(args *GetShardArgs, reply *GetShardReply) {
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+
+	if kv.config.Num < args.CfgNum {
+		reply.Err = ErrNotReady
+		return
+	}
+
+	reply.Err = OK
+	reply.TaskSeq = make(map[int64]int)
+	for i := 0; i < shardmaster.NShards; i++ {
+		reply.Content[i] = make(map[string]string)
+	}
+
+	for _, shardIdx := range args.Shards {
+		for k, v := range kv.db[shardIdx] {
+			reply.Content[shardIdx][k] = v
+		}
+	}
+
+	for cli := range kv.taskSeq {
+		reply.TaskSeq[cli] = kv.taskSeq[cli]
 	}
 }
+
 
 //
 // the tester calls Kill() when a ShardKV instance won't
@@ -146,7 +163,6 @@ func (kv *ShardKV) Kill() {
 	kv.rf.Kill()
 	// Your code here, if desired.
 }
-
 
 //
 // servers[] contains the ports of the servers in this group.
@@ -192,92 +208,90 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister,
 
 	// Use something like this to talk to the shardmaster:
 	// kv.mck = shardmaster.MakeClerk(kv.masters)
-	kv.applyCh = make(chan raft.ApplyMsg)
+	kv.applyCh = make(chan raft.ApplyMsg, 32)
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
-	kv.db = make(map[string]string)
-	kv.reflect = make(map[int]chan Err)
+	kv.messages = make(map[int]chan Result)
 	kv.taskSeq = make(map[int64]int)
 	kv.sm = shardmaster.MakeClerk(masters)
-	kv.reflect_content = make(map[int]map[string]string)
-	kv.reflect_task = make(map[int] map[int64]int)
-	kv.config = kv.sm.Query(-1)
+	//kv.config = kv.sm.Query(-1)
+
+	for i := 0; i < shardmaster.NShards; i++ {
+		kv.db[i] = make(map[string]string)
+	}
 
 	//go kv.checkLoop(masters)
 	go kv.loop(maxraftstate, persister)
-	go kv.checkLoop(servers)
+	go kv.pollConfig(servers)
 	return kv
 }
 
-func (kv *ShardKV) loop(maxraftstate int, persister *raft.Persister)  {
+func (kv *ShardKV) loop(maxraftstate int, persister *raft.Persister) {
 	for entry := range kv.applyCh {
 		if entry.UseSnapshot {
 			kv.readSnatshot(entry.Snapshot)
 		} else {
-			command := entry.Command.(Op)
-			var ret Err = OK
-			var shard int
-			shard = command.Shard
-			gid := kv.config.Shards[shard]
-			if kv.gid != gid {
-				ret = ErrWrongGroup
-			}
-			kv.dbmu.Lock()
-			switch command.Meth {
+			request := entry.Command.(Op)
+			var result Result
+			switch request.Meth {
 			case "Get":
-				break
-			case "Reconfig":
-				for key := range command.Reconfig.Content {
-					kv.db[key] = command.Reconfig.Content[key]
-				}
-
-				for cli := range command.Reconfig.TaskSeq {
-					seq, exist := kv.taskSeq[cli]
-					if !exist || seq < command.Reconfig.TaskSeq[cli] {
-						kv.taskSeq[cli] = seq
-					}
-				}
-				kv.config = command.Config
-			default :
-				if OK != ret || kv.StaleTask(command.Client, command.Seq) {
-					break
-				}
-
-				if command.Meth == "Put" {
-					kv.db[command.Key] = command.Value
-				}else {
-					kv.db[command.Key] += command.Value
-				}
-				kv.taskSeq[command.Client] = command.Seq
+				result.args = request.GetArgc
+			case "PutAppend":
+				result.args = request.PutArgc
+			case "Reconfigure":
+				result.args = request.ReCfg
 			}
-			kv.dbmu.Unlock()
+			result.meth = request.Meth
+			result.reply = kv.ApplyOp(result.args)
 
-			kv.mu.Lock()
-			ch, ok := kv.reflect[entry.Index]
-			if ok {
-				select {
-				case <-kv.reflect[entry.Index]:
-				default:
-				}
-				ch <- ret
-			}
-			kv.mu.Unlock()
-
-			if maxraftstate != -1 && persister.RaftStateSize() > maxraftstate {
-				recover := maxraftstate
-				maxraftstate = -1
-				//snapshot
-				w := new(bytes.Buffer)
-				e := gob.NewEncoder(w)
-				//state
-				e.Encode(kv.db)
-				e.Encode(kv.taskSeq)
-				data := w.Bytes()
-				go func(snapstate []byte, preindex int, maxraftstate *int, recover int){
-					kv.rf.TakeSnatshot(snapstate, preindex)
-					*maxraftstate = recover
-				}(data, entry.Index, &maxraftstate, recover)
-			}
+			kv.sendMessage(entry.Index, result)
+			kv.checkSnapshot(entry.Index, maxraftstate, persister)
 		}
+	}
+}
+
+func (kv *ShardKV) ApplyOp(request interface{}) interface{} {
+	switch request.(type) {
+	case GetArgs:
+		return kv.ApplyGet(request.(GetArgs))
+	case PutAppendArgs:
+		return kv.ApplyPutAppend(request.(PutAppendArgs))
+	case ReconfigureArgs:
+		return kv.ApplyReconfigure(request.(ReconfigureArgs))
+	}
+	return nil
+}
+
+func (kv *ShardKV) sendMessage(index int, result Result) {
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+	
+	if _, ok := kv.messages[index]; !ok {
+		kv.messages[index] = make(chan Result, 1)
+	} else {
+		select {
+		case <-kv.messages[index]:
+		default:
+		}
+	}
+	kv.messages[index] <- result
+}
+
+func (kv *ShardKV) checkSnapshot(idx int, maxraftstate int, persister *raft.Persister) {
+	if maxraftstate != -1 && persister.RaftStateSize() > maxraftstate {
+		recover := maxraftstate
+		maxraftstate = -1
+		//snapshot
+		w := new(bytes.Buffer)
+		e := gob.NewEncoder(w)
+		//state
+		e.Encode(kv.db)
+		e.Encode(kv.taskSeq)
+		e.Encode(kv.config)
+		data := w.Bytes()
+		go func(snapstate []byte, preindex int, maxraftstate *int, recover int) {
+			kv.rf.TakeSnatshot(snapstate, preindex)
+			*maxraftstate = recover
+		}(data, idx, &maxraftstate, recover)
 	}
 }
 
@@ -288,71 +302,188 @@ func (kv *ShardKV) readSnatshot(data []byte) {
 	d := gob.NewDecoder(r)
 	d.Decode(&lastIncludeIndex)
 	d.Decode(&lastIncludeTerm)
-	kv.dbmu.Lock()
+	kv.mu.Lock()
 	d.Decode(&kv.db)
 	d.Decode(&kv.taskSeq)
-	kv.dbmu.Unlock()
+	d.Decode(&kv.config)
+	kv.mu.Unlock()
 }
 
-func (lhs *GetShardReply) Merge(rhs *GetShardReply) {
+func (kv *ShardKV) ApplyGet(args GetArgs) GetReply {
+	var reply GetReply
+	if !kv.CheckValidKey(args.Key) {
+		reply.Err = ErrWrongGroup
+		return reply
+	}
+	kv.mu.Lock()
+	if value, ok := kv.db[key2shard(args.Key)][args.Key]; ok {
+		reply.Err = OK
+		reply.Value = value
+	} else {
+		reply.Err = ErrNoKey
+	}
+	kv.mu.Unlock()
+	return reply
+}
 
-	for key := range rhs.Content {
-		lhs.Content[key] = rhs.Content[key]
+func (kv *ShardKV) ApplyPutAppend(args PutAppendArgs) PutAppendReply {
+	var reply PutAppendReply
+	if !kv.CheckValidKey(args.Key) {
+		reply.Err = ErrWrongGroup
+		return reply
 	}
 
-	for cli := range rhs.TaskSeq {
-		seq, exist := lhs.TaskSeq[cli]
-		if !exist || seq < rhs.TaskSeq[cli] {
-			lhs.TaskSeq[cli] = seq
+	kv.mu.Lock()
+	if !kv.StaleTask(args.Client, args.Seq) {
+		if args.Op == "Put" {
+			kv.db[key2shard(args.Key)][args.Key] = args.Value
+		} else {
+			kv.db[key2shard(args.Key)][args.Key] += args.Value
 		}
 	}
+	reply.Err = OK
+	kv.mu.Unlock()
+	return reply
 }
 
-func (kv *ShardKV) Reconfigure(newCfg shardmaster.Config) bool {
-	oldcfg := &kv.config
-	allChange := GetShardReply{false,OK, map[string]string{}, map[int64]int{}};
+func (kv *ShardKV) ApplyReconfigure(args ReconfigureArgs) ReconfigureReply {
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+
+	var reply ReconfigureReply
+	if args.Cfg.Num > kv.config.Num {
+		for shardIdx, data := range args.Content {
+			for k, v := range data {
+				kv.db[shardIdx][k] = v
+			}
+		}
+
+		for cli := range args.TaskSeq {
+			if seq, exist := kv.taskSeq[cli]; !exist || seq < args.TaskSeq[cli] {
+				kv.taskSeq[cli] = args.TaskSeq[cli]
+			}
+		}
+		kv.config = args.Cfg
+		reply.Err = OK
+	}
+	return reply
+}
+
+func (kv *ShardKV) sendGetShard(gid int, args *GetShardArgs, reply *GetShardReply) bool {
+	for _, server := range kv.config.Groups[gid] {
+		srv := kv.make_end(server)
+		ok := srv.Call("ShardKV.GetShard", args, reply)
+		if ok {
+			if reply.Err == OK {
+				return true
+			} else if reply.Err == ErrNotReady {
+				return false
+			}
+		}
+	}
+	return false
+}
+
+func (kv *ShardKV) Reconfigure(newCfg shardmaster.Config) (ReconfigureArgs, bool) {
+	ret := ReconfigureArgs{Cfg:newCfg}
+	ret.TaskSeq = make(map[int64]int)
 	for i := 0; i < shardmaster.NShards; i++ {
-		gid := oldcfg.Shards[i]
-		//新配置文件中shard已经迁移到本组，但是旧配置文件中shard不属于该组，需要迁移
-		if newCfg.Shards[i] == kv.gid && gid != kv.gid {
-			args := &GetShardArgs{i, newCfg.Num}
-			var reply GetShardReply
-			//是否需要获得所有组内成员的状态？
-			for _, srv := range oldcfg.Groups[gid] {
-				ok := kv.sendGetShard(srv, args, &reply)
-				if ok && reply.Err == OK {
-					break
-				} else if reply.Err == ErrNotReady{
-					return false
+		ret.Content[i] = make(map[string]string)
+	}
+	isOK := true
+	
+	mergeShards := make(map[int][]int)
+	for i := 0; i < shardmaster.NShards; i++ {
+		if newCfg.Shards[i] == kv.gid && kv.config.Shards[i] != kv.gid {
+			gid := kv.config.Shards[i]
+			if gid != 0 {
+				if _, ok := mergeShards[gid]; !ok {
+					mergeShards[gid] = []int{i}
+				} else {
+					mergeShards[gid] = append(mergeShards[gid], i)
 				}
 			}
-			allChange.Merge(&reply)
 		}
 	}
-	//apply change to state machine
-	command := Op{Meth:"Reconfig", Config: newCfg, Reconfig: allChange}
-	kv.DuplicateLog(&command)
-	return true
+	
+	var retMu sync.Mutex
+	var wait sync.WaitGroup
+	for gid, value := range mergeShards {
+		wait.Add(1)
+		go func(gid int, value []int) {
+			defer wait.Done()
+			var reply GetShardReply
+
+			if kv.sendGetShard(gid, &GetShardArgs{CfgNum: newCfg.Num, Shards:value}, &reply) {
+				retMu.Lock()
+				for shardIdx, data := range reply.Content {
+					for k, v := range data {
+						ret.Content[shardIdx][k] = v
+					}
+				}
+				
+				for cli := range reply.TaskSeq {
+					if seq, exist := ret.TaskSeq[cli]; !exist || seq < reply.TaskSeq[cli] {
+						ret.TaskSeq[cli] = reply.TaskSeq[cli]
+					}
+				}
+				retMu.Unlock()
+			} else {
+				isOK = false
+			}
+		} (gid, value)
+	}
+	wait.Wait()
+	
+	return ret, isOK
+	
 }
 
-func (kv *ShardKV) sendGetShard(server string, args *GetShardArgs, reply *GetShardReply) bool {
-	ok := kv.make_end(server).Call("ShardKV.GetShard", args, reply)
-	return ok
+func (kv *ShardKV) SyncReconfigure(args ReconfigureArgs) bool {
+	for i := 0; i < 3; i++ {
+		idx, _, isLeader := kv.rf.Start(Op{Meth:"Reconfigure", ReCfg:args})
+		if !isLeader {
+			return false
+		}
+		
+		kv.mu.Lock()
+		ch, ok := kv.messages[idx]
+		if !ok {
+			ch = make(chan Result, 1)
+			kv.messages[idx] = ch
+		}
+		kv.mu.Unlock()
+		
+		select {
+		case msg := <- ch:
+			if retargs, ok := msg.args.(ReconfigureArgs); !ok {
+				if retargs.Cfg.Num == args.Cfg.Num{
+					return true
+				}
+			}
+		case <- time.After(400 * time.Millisecond):
+			continue
+		}
+	}
+	return false
 }
 
-func (kv *ShardKV) checkLoop(masters []*labrpc.ClientEnd) {
+func (kv *ShardKV) pollConfig(masters []*labrpc.ClientEnd) {
 	var timeoutChan <-chan time.Time
-	for {
+	for true {
 		if _, isLeader := kv.rf.GetState(); isLeader {
 			newCfg := kv.sm.Query(-1)
 			for i := kv.config.Num + 1; i <= newCfg.Num; i++ {
-				cfg := kv.sm.Query(i)
-				if !kv.Reconfigure(cfg) {
+				args, ok := kv.Reconfigure(kv.sm.Query(i))
+				if !ok {
+					break
+				}
+				if !kv.SyncReconfigure(args) {
 					break
 				}
 			}
 		}
-		timeoutChan = time.After(90 * time.Millisecond)
+		timeoutChan = time.After(100 * time.Millisecond)
 		<-timeoutChan
 	}
 }

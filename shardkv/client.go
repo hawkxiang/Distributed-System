@@ -15,7 +15,6 @@ import "shardmaster"
 import "time"
 import (
 	"sync"
-	//"fmt"
 )
 
 //
@@ -94,8 +93,8 @@ func (ck *Clerk) Get(key string) string {
 				srv := ck.make_end(servers[si])
 				var reply GetReply
 				ok := srv.Call("ShardKV.Get", &args, &reply)
-				if ok && reply.WrongLeader == false && (reply.Err == OK || reply.Err == ErrNoKey) {
-					//fmt.Printf("cur key: %s shard %d and gid %d value %s\n", key, shard, gid, reply.Value)
+
+				if ok && reply.WrongLeader == false && (reply.Err == OK || reply.Err == ErrNoKey){
 					return reply.Value
 				}
 				if ok && reply.Err == ErrWrongGroup {
@@ -106,6 +105,7 @@ func (ck *Clerk) Get(key string) string {
 		time.Sleep(100 * time.Millisecond)
 		// ask master for the latest configuration.
 		ck.config = ck.sm.Query(-1)
+		//fmt.Printf("NUM:%d, %s,  %s\n", ck.config.Num, ck.config.Shards, ck.config.Groups)
 	}
 
 	return ""
