@@ -22,7 +22,6 @@ type Op struct {
 }
 
 type Result struct {
-	meth  string
 	args  interface{}
 	reply interface{}
 }
@@ -38,6 +37,7 @@ type ShardKV struct {
 	maxraftstate int // snapshot if log grows this big
 
 	// Your definitions here.
+	muMsg	sync.Mutex
 	sm      *shardmaster.Clerk
 	config  shardmaster.Config
 	db      [shardmaster.NShards]map[string]string
@@ -69,20 +69,20 @@ func (kv *ShardKV) Get(args *GetArgs, reply *GetReply) {
 		return
 	}
 
-	kv.mu.Lock()
+	kv.muMsg.Lock()
 	ch, ok := kv.messages[idx]
 	if !ok {
 		ch = make(chan Result, 1)
 		kv.messages[idx] = ch
 	}
-	kv.mu.Unlock()
-	
+	kv.muMsg.Unlock()
+
 	select {
 	case msg := <- ch:
-		if retargs, ok := msg.args.(GetArgs); !ok {
+		if ret, ok := msg.args.(GetArgs); !ok {
 			reply.WrongLeader = true
 		} else {
-			if args.Client != retargs.Client || args.Seq != retargs.Seq {
+			if args.Client != ret.Client || args.Seq != ret.Seq {
 				reply.WrongLeader = true
 			} else {
 				*reply = msg.reply.(GetReply)
@@ -97,33 +97,60 @@ func (kv *ShardKV) Get(args *GetArgs, reply *GetReply) {
 func (kv *ShardKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	// Your code here.
 	idx, _, isLeader := kv.rf.Start(Op{Meth: "PutAppend", PutArgc:*args})
-		if !isLeader {
+	if !isLeader {
+		reply.WrongLeader = true
+		return
+	}
+	kv.muMsg.Lock()
+	ch, ok := kv.messages[idx]
+	if !ok {
+		ch = make(chan Result, 1)
+		kv.messages[idx] = ch
+	}
+	kv.muMsg.Unlock()
+
+	select {
+	case msg := <- ch:
+		if ret, ok := msg.args.(PutAppendArgs); !ok {
 			reply.WrongLeader = true
-			return
+		} else {
+			if args.Client != ret.Client || args.Seq != ret.Seq {
+				reply.WrongLeader = true
+			} else {
+				reply.Err = msg.reply.(PutAppendReply).Err
+				reply.WrongLeader = false
+			}
 		}
-		kv.mu.Lock()
+	case <- time.After(400 * time.Millisecond):
+		reply.WrongLeader = true
+	}
+}
+
+func (kv *ShardKV) SyncConfigure(args ReconfigureArgs) bool {
+	for i := 0; i < 3; i++ {
+		idx, _, isLeader := kv.rf.Start(Op{Meth:"Reconfigure", ReCfg:args})
+		if !isLeader {
+			return false
+		}
+
+		kv.muMsg.Lock()
 		ch, ok := kv.messages[idx]
 		if !ok {
 			ch = make(chan Result, 1)
 			kv.messages[idx] = ch
 		}
-		kv.mu.Unlock()
-	
+		kv.muMsg.Unlock()
+
 		select {
 		case msg := <- ch:
-			if retargs, ok := msg.args.(PutAppendArgs); !ok {
-				reply.WrongLeader = true
-			} else {
-				if args.Client != retargs.Client || args.Seq != retargs.Seq {
-					reply.WrongLeader = true
-				} else {
-					reply.Err = msg.reply.(PutAppendReply).Err
-					reply.WrongLeader = false
-				}
+			if ret, ok := msg.args.(ReconfigureArgs); !ok {
+				return ret.Cfg.Num == args.Cfg.Num
 			}
-		case <- time.After(400 * time.Millisecond):
-			reply.WrongLeader = true
+		case <- time.After(150 * time.Millisecond):
+			continue
 		}
+	}
+	return false
 }
 
 func (kv *ShardKV) GetShard(args *GetShardArgs, reply *GetShardReply) {
@@ -235,13 +262,14 @@ func (kv *ShardKV) loop(maxraftstate int, persister *raft.Persister) {
 			switch request.Meth {
 			case "Get":
 				result.args = request.GetArgc
+				result.reply = kv.ApplyGet(request.GetArgc)
 			case "PutAppend":
 				result.args = request.PutArgc
+				result.reply = kv.ApplyPutAppend(request.PutArgc)
 			case "Reconfigure":
 				result.args = request.ReCfg
+				result.reply = kv.ApplyReconfigure(request.ReCfg)
 			}
-			result.meth = request.Meth
-			result.reply = kv.ApplyOp(result.args)
 
 			kv.sendMessage(entry.Index, result)
 			kv.checkSnapshot(entry.Index, maxraftstate, persister)
@@ -249,21 +277,9 @@ func (kv *ShardKV) loop(maxraftstate int, persister *raft.Persister) {
 	}
 }
 
-func (kv *ShardKV) ApplyOp(request interface{}) interface{} {
-	switch request.(type) {
-	case GetArgs:
-		return kv.ApplyGet(request.(GetArgs))
-	case PutAppendArgs:
-		return kv.ApplyPutAppend(request.(PutAppendArgs))
-	case ReconfigureArgs:
-		return kv.ApplyReconfigure(request.(ReconfigureArgs))
-	}
-	return nil
-}
-
 func (kv *ShardKV) sendMessage(index int, result Result) {
-	kv.mu.Lock()
-	defer kv.mu.Unlock()
+	kv.muMsg.Lock()
+	defer kv.muMsg.Unlock()
 	
 	if _, ok := kv.messages[index]; !ok {
 		kv.messages[index] = make(chan Result, 1)
@@ -369,7 +385,23 @@ func (kv *ShardKV) ApplyReconfigure(args ReconfigureArgs) ReconfigureReply {
 	return reply
 }
 
-func (kv *ShardKV) sendGetShard(gid int, args *GetShardArgs, reply *GetShardReply) bool {
+func (kv *ShardKV) pollConfig(masters []*labrpc.ClientEnd) {
+	var timeoutChan <-chan time.Time
+	for true {
+		if _, isLeader := kv.rf.GetState(); isLeader {
+			newCfg := kv.sm.Query(-1)
+			for i := kv.config.Num + 1; i <= newCfg.Num; i++ {
+				if !kv.Reconfigure(kv.sm.Query(i)) {
+					break
+				}
+			}
+		}
+		timeoutChan = time.After(100 * time.Millisecond)
+		<-timeoutChan
+	}
+}
+
+func (kv *ShardKV) pullShard(gid int, args *GetShardArgs, reply *GetShardReply) bool {
 	for _, server := range kv.config.Groups[gid] {
 		srv := kv.make_end(server)
 		ok := srv.Call("ShardKV.GetShard", args, reply)
@@ -384,7 +416,7 @@ func (kv *ShardKV) sendGetShard(gid int, args *GetShardArgs, reply *GetShardRepl
 	return false
 }
 
-func (kv *ShardKV) Reconfigure(newCfg shardmaster.Config) (ReconfigureArgs, bool) {
+func (kv *ShardKV) Reconfigure(newCfg shardmaster.Config) bool {
 	ret := ReconfigureArgs{Cfg:newCfg}
 	ret.TaskSeq = make(map[int64]int)
 	for i := 0; i < shardmaster.NShards; i++ {
@@ -414,7 +446,7 @@ func (kv *ShardKV) Reconfigure(newCfg shardmaster.Config) (ReconfigureArgs, bool
 			defer wait.Done()
 			var reply GetShardReply
 
-			if kv.sendGetShard(gid, &GetShardArgs{CfgNum: newCfg.Num, Shards:value}, &reply) {
+			if kv.pullShard(gid, &GetShardArgs{CfgNum: newCfg.Num, Shards:value}, &reply) {
 				retMu.Lock()
 				for shardIdx, data := range reply.Content {
 					for k, v := range data {
@@ -434,56 +466,5 @@ func (kv *ShardKV) Reconfigure(newCfg shardmaster.Config) (ReconfigureArgs, bool
 		} (gid, value)
 	}
 	wait.Wait()
-	
-	return ret, isOK
-	
-}
-
-func (kv *ShardKV) SyncReconfigure(args ReconfigureArgs) bool {
-	for i := 0; i < 3; i++ {
-		idx, _, isLeader := kv.rf.Start(Op{Meth:"Reconfigure", ReCfg:args})
-		if !isLeader {
-			return false
-		}
-		
-		kv.mu.Lock()
-		ch, ok := kv.messages[idx]
-		if !ok {
-			ch = make(chan Result, 1)
-			kv.messages[idx] = ch
-		}
-		kv.mu.Unlock()
-		
-		select {
-		case msg := <- ch:
-			if retargs, ok := msg.args.(ReconfigureArgs); !ok {
-				if retargs.Cfg.Num == args.Cfg.Num{
-					return true
-				}
-			}
-		case <- time.After(400 * time.Millisecond):
-			continue
-		}
-	}
-	return false
-}
-
-func (kv *ShardKV) pollConfig(masters []*labrpc.ClientEnd) {
-	var timeoutChan <-chan time.Time
-	for true {
-		if _, isLeader := kv.rf.GetState(); isLeader {
-			newCfg := kv.sm.Query(-1)
-			for i := kv.config.Num + 1; i <= newCfg.Num; i++ {
-				args, ok := kv.Reconfigure(kv.sm.Query(i))
-				if !ok {
-					break
-				}
-				if !kv.SyncReconfigure(args) {
-					break
-				}
-			}
-		}
-		timeoutChan = time.After(100 * time.Millisecond)
-		<-timeoutChan
-	}
+	return isOK && kv.SyncConfigure(ret)
 }
