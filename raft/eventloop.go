@@ -75,13 +75,13 @@ func (rf *Raft) candidateLoop() {
 
 			for i := 0; i < len(rf.peers); i++ {
 				if i != rf.me {
-					go func(server int) {
+					go func(server int, resp chan *RequestVoteReply) {
 						r := new(RequestVoteReply)
 						ok := rf.sendRequestVote(server, RequestVoteArgs{rf.CurrentTerm, rf.me, lastLogIndex, lastLogTerm}, r)
 						if ok {
-							respChan <- r
+							resp <- r
 						}
-					}(i)
+					}(i, respChan)
 				}
 			}
 
