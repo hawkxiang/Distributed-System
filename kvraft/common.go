@@ -37,3 +37,17 @@ type GetReply struct {
 	Err         Err
 	Value       string
 }
+
+type ScanArgs struct {
+	Low string
+	High string
+
+	Client int64
+	Seq    int
+}
+
+type ScanReply struct {
+	WrongLeader bool
+	Err         Err
+	Content      map[string]string
+}

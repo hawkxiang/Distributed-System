@@ -76,6 +76,27 @@ func (kv *RaftKV) DuplicateLog(entry Op) bool {
 	}
 }
 
+func (kv *RaftKV) Scan(args *ScanArgs, reply *ScanReply) {
+	// Your code here.
+	command := Op{Meth: "Get", Key: args.Low + "~" + args.High}
+	//duplicate command to raft log
+	reply.Err = OK
+	if ok := kv.DuplicateLog(command); !ok {
+		reply.WrongLeader = true
+	} else {
+		reply.WrongLeader = false
+		//get state
+		reply.Content = make(map[string]string)
+		kv.mapmu.Lock()
+		for key, val := range kv.db {
+			if (key >= args.Low && key <= args.High) {
+				reply.Content[key] = val
+			}
+		}
+		kv.mapmu.Unlock()
+	}
+}
+
 func (kv *RaftKV) Get(args *GetArgs, reply *GetReply) {
 	// Your code here.
 	command := Op{Meth: "Get", Key: args.Key}

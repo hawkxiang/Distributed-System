@@ -3,7 +3,10 @@ package raftkv
 import "labrpc"
 import "crypto/rand"
 import "math/big"
-import "sync"
+import (
+	"sync"
+	"fmt"
+)
 
 type Clerk struct {
 	servers []*labrpc.ClientEnd
@@ -63,7 +66,24 @@ func (ck *Clerk) Get(key string) string {
 			ck.lastLeader = i
 		}
 	}
+}
 
+func (ck *Clerk) Scan(low string, high string) map[string]string {
+	fmt.Print("Scan")
+	args := ScanArgs{Low: low, High: high}
+	for i, n := ck.lastLeader, len(ck.servers); ; i = (i + 1) % n {
+		var reply ScanReply
+		ok := ck.servers[i].Call("RaftKV.Scan", &args, &reply)
+		if ok && !reply.WrongLeader {
+			if reply.Err == ErrNoKey {
+				return make(map[string]string)
+			} else {
+				return reply.Content
+			}
+			ck.lastLeader = i
+		}
+	}
+	return make(map[string]string)
 }
 
 //

@@ -170,6 +170,15 @@ func GenericTest(t *testing.T, tag string, nclients int, unreliable bool, crash 
 			}
 		})
 
+		ck.Put("1", "45M*")
+		ck.Put("3", "13*(sdf")
+		ck.Put("6", "8&sdf9")
+		ck.Put("8", "xc990")
+		ck.Put("5", "34523")
+		ck.Put("7", "sdf")
+		scan := ck.Scan("2", "7")
+		fmt.Printf("%s \n", scan)
+
 		if partitions {
 			// Allow the clients to perform some operations without interruption
 			time.Sleep(1 * time.Second)
