@@ -170,6 +170,7 @@ func GenericTest(t *testing.T, tag string, nclients int, unreliable bool, crash 
 			}
 		})
 
+		fmt.Printf("Scan simple test \n")
 		ck.Put("1", "45M*")
 		ck.Put("3", "13*(sdf")
 		ck.Put("6", "8&sdf9")
